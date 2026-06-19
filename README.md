@@ -131,5 +131,4 @@ d.deploy()   # sends the recorded command log to a real Tello via easyTello
 
 ## License
 
-MIT. Based on the original
-[Fireline-Science/tello_sim](https://github.com/Fireline-Science/tello_sim).
+MIT
