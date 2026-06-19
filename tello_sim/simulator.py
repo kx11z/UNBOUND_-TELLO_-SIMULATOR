@@ -43,6 +43,19 @@ class Simulator():
         self.path_coors_3d.append((self.cur_loc[0], self.cur_loc[1], self.altitude))
 
     @staticmethod
+    def _padded_limits(lo, hi, default=200, pad=40):
+        """
+        Return (low, high) axis limits that always contain [lo, hi].
+
+        The view starts at a comfortable default window (e.g. +/-200 cm) but
+        expands with padding whenever the path runs past it, so the drone can
+        never end up drawn outside the axes.
+        """
+        low = -default if lo > -default else lo - pad
+        high = default if hi < default else hi + pad
+        return low, high
+
+    @staticmethod
     def serialize_command(command: dict):
         serialized = command['command']
         command_args = command.get('arguments', ())
@@ -103,16 +116,8 @@ class Simulator():
         title = "Path of Tello from Takeoff Location. \nLast Heading= {} Degrees from Start".format(self.bearing)
         fig, ax = plt.subplots()
         horz_df = pd.DataFrame(self.path_coors)
-        xlow = min(horz_df[0])
-        xhi = max(horz_df[0])
-        ylow = min(horz_df[1])
-        yhi = max(horz_df[1])
-        xlowlim = -200 if xlow > -200 else xlow - 40
-        xhilim = 200 if xhi < 200 else xhi + 40
-        ylowlim = -200 if ylow > -200 else ylow - 40
-        yhilim = 200 if yhi < 200 else yhi + 40
-        ax.set_xlim([xlowlim, xhilim])
-        ax.set_ylim([ylowlim, yhilim])
+        ax.set_xlim(self._padded_limits(min(horz_df[0]), max(horz_df[0])))
+        ax.set_ylim(self._padded_limits(min(horz_df[1]), max(horz_df[1])))
         ax.plot(horz_df[0], horz_df[1], 'bo', linestyle='dashed', linewidth=2, markersize=12, label="Drone Moves")
         ax.plot(horz_df[0], horz_df[1], linewidth=e, alpha=.15)
         if len(self.flip_coors) > 0:
@@ -163,15 +168,10 @@ class Simulator():
             ax.scatter(flip_df['x'], flip_df['y'], flip_df['z'],
                        color='red', s=120, label="Drone Flips")
 
-        # Match the framing used by the horizontal plot so the scale is familiar
-        xlow, xhi = path_df['x'].min(), path_df['x'].max()
-        ylow, yhi = path_df['y'].min(), path_df['y'].max()
-        xlowlim = -200 if xlow > -200 else xlow - 40
-        xhilim = 200 if xhi < 200 else xhi + 40
-        ylowlim = -200 if ylow > -200 else ylow - 40
-        yhilim = 200 if yhi < 200 else yhi + 40
-        ax.set_xlim([xlowlim, xhilim])
-        ax.set_ylim([ylowlim, yhilim])
+        # Match the framing used by the horizontal plot so the scale is familiar,
+        # expanding past the default window whenever the path runs off it.
+        ax.set_xlim(self._padded_limits(path_df['x'].min(), path_df['x'].max()))
+        ax.set_ylim(self._padded_limits(path_df['y'].min(), path_df['y'].max()))
         ax.set_zlim([0, max(path_df['z'].max() + 40, 120)])
 
         ax.set_xlabel('X Distance from Takeoff (cm)')
@@ -196,14 +196,18 @@ class Simulator():
     def _draw_scene(self, polyline, drone_xyz):
         """Redraw the whole scene: completed path, markers, and the drone."""
         ax = self.ax
+        # cla() resets the camera, which would undo any rotation the user has
+        # dragged in. Capture the current view angle and restore it after redraw
+        # so the plot stays where the user left it (even mid-flight).
+        elev, azim = ax.elev, ax.azim
         ax.cla()
 
-        # Keep the framing fixed to all known waypoints so the view doesn't jump
-        path_df = pd.DataFrame(self.path_coors_3d, columns=['x', 'y', 'z'])
-        xlow, xhi = path_df['x'].min(), path_df['x'].max()
-        ylow, yhi = path_df['y'].min(), path_df['y'].max()
-        ax.set_xlim([-200 if xlow > -200 else xlow - 40, 200 if xhi < 200 else xhi + 40])
-        ax.set_ylim([-200 if ylow > -200 else ylow - 40, 200 if yhi < 200 else yhi + 40])
+        # Frame to every known waypoint *and* the drone's current (possibly
+        # mid-flight) position, so it can never be drawn outside the axes.
+        path_df = pd.DataFrame(self.path_coors_3d + [tuple(drone_xyz)],
+                               columns=['x', 'y', 'z'])
+        ax.set_xlim(self._padded_limits(path_df['x'].min(), path_df['x'].max()))
+        ax.set_ylim(self._padded_limits(path_df['y'].min(), path_df['y'].max()))
         ax.set_zlim([0, max(path_df['z'].max() + 40, 120)])
 
         # The trail flown so far (plus the in-progress segment to the drone)
@@ -225,6 +229,7 @@ class Simulator():
         ax.set_zlabel('Altitude (cm)')
         ax.set_title("Tello Live 3D Flight — Heading {}°".format(self.bearing))
         ax.legend(loc='upper left')
+        ax.view_init(elev=elev, azim=azim)
         self.fig.canvas.draw()
 
     def _animate_to_latest(self, pause=0.02):
@@ -248,6 +253,23 @@ class Simulator():
         self._ensure_figure()
         self._draw_scene(list(self.path_coors_3d), self.path_coors_3d[-1])
         plt.pause(0.001)
+
+    def show(self):
+        """
+        Keep the live 3D plot open and fully interactive after the flight ends.
+
+        Click and drag inside the plot to rotate it, scroll to zoom. This blocks
+        until you close the window, so call it last (e.g. after ``land``).
+
+        Examples
+        ----------
+        drone.show() # hold the window open so you can rotate the 3D path
+
+        """
+        self._ensure_figure()
+        self._draw_scene(list(self.path_coors_3d), self.path_coors_3d[-1])
+        plt.ioff()  # leave interactive mode so show() blocks and stays responsive
+        plt.show()
 
     # Determine bearing relative to start which is inline with positive y-axis
     @staticmethod
